@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Deteksi Wajah — OpenCV.js</title>
+<style>
+  :root{
+    --ink:#12181b;
+    --paper:#eef1ee;
+    --line:#c8cfc9;
+    --accent:#3a6b52;
+    --accent-soft:#dce7de;
+    --mono: "SF Mono", ui-monospace, Menlo, monospace;
+  }
+  *{box-sizing:border-box;}
+  html,body{
+    margin:0;
+    background:var(--paper);
+    color:var(--ink);
+    font-family:-apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+    -webkit-tap-highlight-color:transparent;
+  }
+  body{
+    min-height:100vh;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    padding:max(20px, env(safe-area-inset-top)) 16px max(20px, env(safe-area-inset-bottom));
+  }
+  header{
+    width:100%;
+    max-width:640px;
+    margin-bottom:14px;
+  }
+  h1{
+    font-size:1.35rem;
+    font-weight:600;
+    letter-spacing:-0.01em;
+    margin:0 0 4px;
+  }
+  p.sub{
+    margin:0;
+    color:#5b655e;
+    font-size:0.92rem;
+    line-height:1.4;
+  }
+  .stage{
+    position:relative;
+    width:100%;
+    max-width:640px;
+    aspect-ratio: 3/4;
+    background:#0d1210;
+    border-radius:18px;
+    overflow:hidden;
+    border:1px solid var(--line);
+  }
+  video, canvas{
+    position:absolute;
+    top:0; left:0;
+    width:100%;
+    height:100%;
+    object-fit:cover;
+  }
+  video{ visibility:hidden; }
+  #overlay-msg{
+    position:absolute;
+    inset:0;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    text-align:center;
+    padding:24px;
+    color:#e7ece8;
+    font-size:0.95rem;
+    line-height:1.5;
+    background:rgba(10,15,12,0.55);
+  }
+  #overlay-msg.hide{ display:none; }
+  .status-bar{
+    width:100%;
+    max-width:640px;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    margin-top:12px;
+    font-family:var(--mono);
+    font-size:0.85rem;
+    color:#465049;
+  }
+  .status-bar .count{
+    background:var(--accent-soft);
+    color:var(--accent);
+    padding:3px 10px;
+    border-radius:999px;
+    font-weight:600;
+  }
+  .controls{
+    width:100%;
+    max-width:640px;
+    display:flex;
+    gap:10px;
+    margin-top:16px;
+  }
+  button{
+    flex:1;
+    padding:13px 16px;
+    border-radius:12px;
+    border:1px solid var(--line);
+    background:#fff;
+    color:var(--ink);
+    font-size:0.95rem;
+    font-weight:500;
+    cursor:pointer;
+  }
+  button.primary{
+    background:var(--accent);
+    border-color:var(--accent);
+    color:#fff;
+  }
+  button:disabled{
+    opacity:0.45;
+  }
+  footer{
+    width:100%;
+    max-width:640px;
+    margin-top:18px;
+    color:#7a847d;
+    font-size:0.8rem;
+    line-height:1.5;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Deteksi Wajah Real-time</h1>
+  <p class="sub">Berjalan langsung di browser lewat OpenCV.js. Tidak ada data yang dikirim ke server mana pun — semuanya diproses di iPad kamu.</p>
+</header>
+
+<div class="stage">
+  <video id="video" playsinline autoplay muted></video>
+  <canvas id="canvas"></canvas>
+  <div id="overlay-msg">Memuat OpenCV.js…</div>
+</div>
+
+<div class="status-bar">
+  <span id="fps">— fps</span>
+  <span class="count" id="face-count">0 wajah</span>
+</div>
+
+<div class="controls">
+  <button id="btn-start" class="primary" disabled>Mulai Kamera</button>
+  <button id="btn-switch" disabled>Ganti Kamera</button>
+</div>
+
+<footer>
+  Tips Safari iPad: saat diminta izin kamera, ketuk "Allow/Izinkan". Kalau tidak muncul, cek Settings → Safari → Camera. File ini murni HTML/JS, aman dibuka offline setelah OpenCV.js pertama kali ter-load.
+</footer>
+
+<script async src="https://docs.opencv.org/4.9.0/opencv.js" onload="onOpenCvReady()"></script>
+<script>
+let video = document.getElementById('video');
+let canvas = document.getElementById('canvas');
+let ctx = canvas.getContext('2d');
+let overlayMsg = document.getElementById('overlay-msg');
+let btnStart = document.getElementById('btn-start');
+let btnSwitch = document.getElementById('btn-switch');
+let faceCountEl = document.getElementById('face-count');
+let fpsEl = document.getElementById('fps');
+
+let stream = null;
+let facingMode = 'user';
+let classifier = null;
+let running = false;
+let cvReady = false;
+
+function onOpenCvReady() {
+  cv['onRuntimeInitialized'] = () => {
+    classifier = new cv.CascadeClassifier();
+    // Load Haar cascade file bundled with opencv.js's data path
+    let cascadeUrl = 'https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml';
+    fetch(cascadeUrl)
+      .then(r => r.arrayBuffer())
+      .then(buf => {
+        cv.FS_createDataFile('/', 'face.xml', new Uint8Array(buf), true, false, false);
+        classifier.load('face.xml');
+        cvReady = true;
+        overlayMsg.textContent = 'Ketuk "Mulai Kamera" untuk memulai.';
+        btnStart.disabled = false;
+      })
+      .catch(() => {
+        overlayMsg.textContent = 'Gagal memuat model deteksi wajah. Cek koneksi internet lalu reload halaman.';
+      });
+  };
+}
+
+async function startCamera() {
+  overlayMsg.textContent = 'Meminta izin kamera…';
+  overlayMsg.classList.remove('hide');
+  try {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: facingMode, width: { ideal: 640 }, height: { ideal: 480 } },
+      audio: false
+    });
+    video.srcObject = stream;
+    await video.play();
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    overlayMsg.classList.add('hide');
+    btnSwitch.disabled = false;
+    running = true;
+    requestAnimationFrame(processFrame);
+  } catch (err) {
+    overlayMsg.classList.remove('hide');
+    overlayMsg.textContent = 'Tidak bisa mengakses kamera: ' + err.message + '. Pastikan izin kamera diaktifkan di pengaturan Safari.';
+  }
+}
+
+let lastTime = performance.now();
+let src, gray, faces;
+
+function processFrame() {
+  if (!running) return;
+  if (video.videoWidth === 0) {
+    requestAnimationFrame(processFrame);
+    return;
+  }
+
+  if (!src) {
+    src = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
+    gray = new cv.Mat();
+    faces = new cv.RectVector();
+  }
+
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  src.data.set(imageData.data);
+
+  cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+  cv.equalizeHist(gray, gray);
+
+  let msize = new cv.Size(0, 0);
+  classifier.detectMultiScale(gray, faces, 1.1, 4, 0, msize, msize);
+
+  for (let i = 0; i < faces.size(); i++) {
+    let f = faces.get(i);
+    ctx.strokeStyle = '#3fe08a';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(f.x, f.y, f.width, f.height);
+  }
+
+  faceCountEl.textContent = faces.size() + ' wajah';
+
+  let now = performance.now();
+  let fps = Math.round(1000 / (now - lastTime));
+  lastTime = now;
+  fpsEl.textContent = fps + ' fps';
+
+  requestAnimationFrame(processFrame);
+}
+
+btnStart.addEventListener('click', () => {
+  startCamera();
+});
+
+btnSwitch.addEventListener('click', () => {
+  facingMode = facingMode === 'user' ? 'environment' : 'user';
+  startCamera();
+});
+</script>
+
+</body>
+</html>
